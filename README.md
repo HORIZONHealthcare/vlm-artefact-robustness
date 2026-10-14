@@ -1,106 +1,70 @@
-# RETFound — A foundation model for retinal images
+# Medical Image Artefact Robustness in Vision-Language Models
 
-RETFound learns representations from unlabelled retinal images using self-supervised learning. Its pretrained models can be adapted to retinal disease classification and other research tasks using colour fundus photography (CFP) or optical coherence tomography (OCT).
+Code for *Towards Generalisable Robustness to Medical Image Artefacts in Vision-Language Models: Efficient Prompting and Adaptation Strategies*.
 
-[Paper](https://www.nature.com/articles/s41586-023-06555-x) · [CFP weights](https://huggingface.co/YukunZhou/RETFound_mae_natureCFP) · [OCT weights](https://huggingface.co/YukunZhou/RETFound_mae_natureOCT) · [Datasets](https://github.com/rmaphoh/RETFound/blob/main/BENCHMARK.md) · [Code](https://github.com/rmaphoh/RETFound)
+![Study overview](images/overview.png)
 
-**A foundation model for generalizable disease detection from retinal images**  
-Yukun Zhou, Mark A. Chia, Siegfried K. Wagner and colleagues · *Nature* 622, 156–163 (2023)
+## Code and data
 
-## Highlights
+- [Representative study images](data%20samples/README.md)
+- [Actual few-shot cases](fewshot_case/README.md): four conditions with fixed image ordering
+- [Preprocessing](preprocessing/): resizing and artefact generation
+- [Training](training/): projector, LoRA, and final-representation adapter tuning
+- [Evaluation](evaluation/): open-weight baseline, four prompt configurations, few-shot, adapter, projector, and LoRA inference
 
-- Self-supervised pretraining on 1.6 million retinal images.
-- Separate pretrained weights for CFP and OCT, with a shared fine-tuning workflow.
+Open-weight backends: `qwen3`, `qwen35`, `internvl`, `medgemma`, `lingshu`, and `lingshu_i`. API scripts cover GPT-5.5 and Gemini 3.1 Pro.
 
-![Example healthcare AI workflow: input images, a foundation model, task adaptation and evaluation.](images/method-overview.png)
+## Quick start
 
-*Figure 1. Example figure placement. This generated illustration shows a generic healthcare AI workflow; replace it with your project's method figure. It is not a figure from the RETFound paper.* [View full-size image](images/method-overview.png).
-
-## Getting started
-
-### 1. Install
-Install the environment and dependencies:
-```bash
-git clone https://github.com/rmaphoh/RETFound.git
-cd RETFound
-conda create -n retfound python=3.11.0 -y
-conda activate retfound
-pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt
-```
-
-### 2. Get model weights and data
-
-| Resource | Link | Use |
-|---|---|---|
-| CFP model | [Hugging Face model card](https://huggingface.co/YukunZhou/RETFound_mae_natureCFP) · [Checkpoint file](https://huggingface.co/YukunZhou/RETFound_mae_natureCFP/blob/main/RETFound_mae_natureCFP.pth) | Colour fundus photographs |
-| OCT model | [Hugging Face model card](https://huggingface.co/YukunZhou/RETFound_mae_natureOCT) · [Checkpoint file](https://huggingface.co/YukunZhou/RETFound_mae_natureOCT/blob/main/RETFound_mae_natureOCT.pth) | OCT images |
-| Benchmark datasets | [RETFound benchmark resources](https://github.com/rmaphoh/RETFound/blob/main/BENCHMARK.md#data-split) | Dataset downloads and evaluation splits |
-
-Request access on the model page, then authenticate in the environment created above:
+Run from the repository root using Python 3.11 and a suitable GPU environment:
 
 ```bash
-python -c "from huggingface_hub import login; login()"
+python -m pip install -r requirements.txt
+python -m evaluation.vlm_evaluation \
+  --run_vlm_baseline --backend qwen3 \
+  --data_csv metadata/test.csv --data_root data/ \
+  --out_json outputs/qwen3_internal_zero_shot.json --seed 42
 ```
 
-For the CFP example below, prepare MESSIDOR2 with `train`, `val` and `test` folders, each containing one subfolder per class, and set the local path:
+Prepare your own CSV using [example_train_metadata.csv](example_train_metadata.csv): `dataset` (`mri`, `oct`, `xray`), `filepath`, `fileindex`, `use_type` (`train`, `val`, `test`), `severity` (`clean`, `weak`), `binarylabel` (0 normal, 1 disease), and `corruption`. Paths are absolute or relative to `--data_root`; all views of a source image share its ID and split. Evaluation uses test rows.
+
+Optional dependencies: [4-bit loading](requirements-4bit.txt) and [commercial APIs](requirements-commercial.txt). API scripts use `OPENAI_API_KEY` or `GEMINI_API_KEY` from the environment.
+
+Select `--prompt_config base`, `disease`, `artefact`, or `combined` for zero-shot prompting.
+
+## Training and few-shot inference
+
+Train an adapter on clean and corrupted training/validation rows:
 
 ```bash
-export RETFOUND_DATA="$HOME/horizon-resources/RETFound/MESSIDOR2"
+python -m training.adapter_train \
+  --backend qwen3 --clean_csv metadata/clean.csv \
+  --artefact_csv metadata/artefact.csv --data_root data/ \
+  --save_dir outputs/adapter --tag seed42 --seed 42
 ```
 
-### 3. Fine-tune and evaluate
-
-Fine-tune:
+Evaluate it with `evaluation.vlm_evaluation --run_vlm --adapter_on_clean --vlm_ckpt outputs/adapter/qwen3_seed42_best.pt`, adding the same backend, test CSV, data root, and output arguments as above.
 
 ```bash
-torchrun --standalone --nproc_per_node=1 main_finetune.py \
-  --model RETFound_mae --model_arch retfound_mae \
-  --finetune RETFound_mae_natureCFP \
-  --data_path "$RETFOUND_DATA" --nb_classes 5 \
-  --input_size 224 --batch_size 24 --epochs 50 \
-  --global_pool --savemodel --adaptation finetune \
-  --task retfound_mae_messidor2
+python -m evaluation.vlm_few_shot --backend qwen3 \
+  --demo_csv fewshot_case/few_shot_2.csv --data_root . \
+  --data_csv metadata/test.csv --out_json outputs/qwen3_fewshot.json
 ```
 
-Evaluate the resulting checkpoint:
+The few-shot command uses repository-relative paths; query paths must be absolute or start with `data/` when stored there. Use `--query_split val` for configuration selection and `test` for held-out evaluation.
 
-```bash
-torchrun --standalone --nproc_per_node=1 main_finetune.py \
-  --model RETFound_mae --model_arch retfound_mae \
-  --data_path "$RETFOUND_DATA" --nb_classes 5 \
-  --input_size 224 --batch_size 24 --global_pool \
-  --adaptation finetune --task retfound_mae_messidor2 \
-  --eval --resume ./output_dir/retfound_mae_messidor2/checkpoint-best.pth
-```
+Projector and LoRA training use `training.proj_gen_train` and `training.lora_gen_train`; checkpoint inference uses `evaluation.generative_adaptation`. Preprocessing uses `preprocessing.apply_resize`, `apply_artefacts`, and `apply_new_artefacts`. Each module lists arguments through `python -m <module> --help`. Pin the same `--model_revision` in open-weight training and evaluation.
 
-## Environment and hardware
+## Data availability
 
-| Component | Version or requirement |
-|---|---|
-| Python | 3.11.0 |
-| Framework | PyTorch 2.5.1; torchvision 0.20.1 |
-| CUDA / CPU | CUDA 12.1 |
-| Hardware and GPU memory | {{MINIMUM_HARDWARE_AND_GPU_MEMORY}} |
+The datasets used in this study are derived from publicly available sources:
 
-## Citation
+| Modality | Internal dataset | External dataset |
+| --- | --- | --- |
+| Brain MRI | [Brain Tumor MRI Dataset (Kaggle)](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset) | [Mendeley Data, version 1](https://data.mendeley.com/datasets/b3z27t8vpb/1) |
+| Retinal OCT | [Mendeley Data, version 3](https://data.mendeley.com/datasets/rscbjbr9sj/3) | [Mendeley Data, version 2](https://data.mendeley.com/datasets/8kt969dhx6/2); [OCT and Eye Fundus Dataset repository](https://github.com/Traslational-Visual-Health-Laboratory/OCT-AND-EYE-FUNDUS-DATASET) |
+| Chest X-ray | [COVID-19 Detection X-Ray Dataset (Kaggle)](https://www.kaggle.com/datasets/darshan1504/covid19-detection-xray-dataset) | [NIH Chest X-rays (Kaggle)](https://www.kaggle.com/datasets/nih-chest-xrays/data) |
 
-If you use RETFound, please cite:
+COVID-19 images were excluded from the internal chest X-ray cohort. Representative images and actual few-shot examples are included; obtain full datasets separately from their providers. 
 
-```bibtex
-@article{zhou2023foundation,
-  title   = {A foundation model for generalizable disease detection from retinal images},
-  author  = {Zhou, Yukun and Chia, Mark A. and Wagner, Siegfried K. and others},
-  journal = {Nature},
-  volume  = {622},
-  pages   = {156--163},
-  year    = {2023},
-  doi     = {10.1038/s41586-023-06555-x}
-}
-```
-
-## Contact
-
-For research enquiries, contact [Yukun Zhou](mailto:yukun.zhou.19@ucl.ac.uk).
-
-Template prepared for [HORIZON](https://github.com/HORIZONHealthcare).
+Questions: [GitHub Issues](https://github.com/HORIZONHealthcare/vlm-artefact-robustness/issues).

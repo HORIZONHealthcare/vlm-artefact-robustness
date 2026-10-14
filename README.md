@@ -1,4 +1,4 @@
-# Improving Vision-Language Model Robustness to Medical Image Artefacts through Prompting and Adaptation
+# Improving Vision-Language Model Robustness to Medical Image Artefacts
 
 Code for *Towards Generalisable Robustness to Medical Image Artefacts in Vision-Language Models: Efficient Prompting and Adaptation Strategies*.
 
